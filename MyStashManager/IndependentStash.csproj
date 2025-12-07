@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <Nullable>enable</Nullable>
+    <IsMac>false</IsMac>
+    <DuckovPath>D:\xiazai\jli\Escape from Duckov</DuckovPath>
+    <SubPath>\Duckov_Data\Managed\</SubPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="$(DuckovPath)$(SubPath)TeamSoda.*">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="ES3">
+      <HintPath>$(DuckovPath)$(SubPath)EasySave3.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UniTask">
+      <HintPath>$(DuckovPath)$(SubPath)UniTask.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="$(DuckovPath)$(SubPath)ItemStatsSystem.dll">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="$(DuckovPath)$(SubPath)Unity*">
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
