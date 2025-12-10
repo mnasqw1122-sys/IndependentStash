@@ -5,6 +5,7 @@
     <IsMac>false</IsMac>
     <DuckovPath>D:\xiazai\jli\Escape from Duckov</DuckovPath>
     <SubPath>\Duckov_Data\Managed\</SubPath>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="$(DuckovPath)$(SubPath)TeamSoda.*">

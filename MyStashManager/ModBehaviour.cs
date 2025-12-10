@@ -1,16 +1,16 @@
 using System;
-using System.IO;
 using Duckov.UI;
 using ItemStatsSystem;
 using UnityEngine;
 using Saves;
 using UnityEngine.SceneManagement;
+using Cysharp.Threading.Tasks;
 
 namespace IndependentStash
 {
     public class ModBehaviour : Duckov.Modding.ModBehaviour
     {
-        void OnEnable()
+        private void OnEnable()
         {
             LevelManager.OnAfterLevelInitialized += OnAfterLevelInitialized;
             SavesSystem.OnCollectSaveData += OnCollectSaveData;
@@ -21,7 +21,7 @@ namespace IndependentStash
             MyStashManager.RegisterEvents();
         }
 
-        void OnDisable()
+        private void OnDisable()
         {
             LevelManager.OnAfterLevelInitialized -= OnAfterLevelInitialized;
             SavesSystem.OnCollectSaveData -= OnCollectSaveData;
@@ -32,79 +32,81 @@ namespace IndependentStash
             MyStashManager.UnregisterEvents();
         }
 
-        void OnAfterLevelInitialized()
+        private void OnAfterLevelInitialized()
         {
-            // 延迟一帧调用，确保场景完全加载
-            this.DelayedCall(0.1f, () =>
-            {
-                MyStashManager.AttachInteractableToPlayerStorage();
-            });
+            // Delay one frame to ensure scene is fully loaded
+            DelayedAttachAsync().Forget();
         }
 
-        void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
-            Debug.Log($"IndependentStash: Scene loaded - {scene.name}");
+            Debug.Log($"[IndependentStash] Scene loaded: {scene.name}");
             
-            // 检查是否是基地场景
-            if (scene.name.Contains("Base") || scene.name.Contains("基地"))
+            // Check if it's a base level
+            if (IsBaseLevel(scene.name))
             {
-                // 延迟一帧确保LevelManager已初始化
-                this.DelayedCall(0.1f, () =>
-                {
-                    if (LevelManager.Instance != null && LevelManager.Instance.IsBaseLevel)
-                    {
-                        MyStashManager.AttachInteractableToPlayerStorage();
-                    }
-                });
+                DelayedAttachAsync().Forget();
             }
         }
 
-        void OnSceneUnloaded(Scene scene)
+        private void OnSceneUnloaded(Scene scene)
         {
-            Debug.Log($"IndependentStash: Scene unloaded - {scene.name}");
+            Debug.Log($"[IndependentStash] Scene unloaded: {scene.name}");
             
-            // 场景卸载时保存数据
-            if (scene.name.Contains("Base") || scene.name.Contains("基地"))
+            if (IsBaseLevel(scene.name))
             {
                 MyStashManager.Save();
             }
         }
 
-        void OnCollectSaveData()
+        private void OnCollectSaveData()
         {
             try
             {
                 MyStashManager.Save();
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                Debug.LogError("IndependentStash Save hook error: " + ex.Message);
+                Debug.LogError($"[IndependentStash] Save hook error: {ex}");
             }
         }
 
-        void OnApplicationQuit()
+        private void OnApplicationQuit()
         {
-            try { MyStashManager.Save(); } catch {}
+            try 
+            { 
+                MyStashManager.Save(); 
+            } 
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] Quit save error: {ex}");
+            }
         }
 
-        void Update()
+        private void Update()
         {
             if (Input.GetKeyDown(KeyCode.BackQuote))
             {
                 MyStashManager.TryToggleStash();
             }
         }
-        
-        // 辅助方法：延迟调用
-        void DelayedCall(float delay, Action action)
+
+        private async UniTaskVoid DelayedAttachAsync()
         {
-            StartCoroutine(DelayedCallCoroutine(delay, action));
+            // Wait for 0.1s real time to ensure initialization
+            await UniTask.Delay(TimeSpan.FromSeconds(0.1f), ignoreTimeScale: true);
+
+            if (LevelManager.Instance != null && LevelManager.Instance.IsBaseLevel)
+            {
+                MyStashManager.AttachInteractableToPlayerStorage();
+            }
         }
-        
-        System.Collections.IEnumerator DelayedCallCoroutine(float delay, Action action)
+
+        private bool IsBaseLevel(string sceneName)
         {
-            yield return new WaitForSecondsRealtime(delay);
-            action?.Invoke();
+            if (string.IsNullOrEmpty(sceneName)) return false;
+            return sceneName.IndexOf("Base", StringComparison.OrdinalIgnoreCase) >= 0 
+                || sceneName.Contains("基地");
         }
     }
 }

@@ -12,19 +12,44 @@ using UnityEngine.UI;
 using Saves;
 using Cysharp.Threading.Tasks;
 
-
 namespace IndependentStash
 {
     public static class MyStashManager
     {
-        const int CAPACITY = 5000;
-        static InventoryData? _snapshot;
-        static Inventory? _runtimeInventory;
-        static InteractableLootbox? _lootbox;
-        static string? _filePath;
-        static DateTime _lastSaveTime = DateTime.MinValue;
+        // Constants
+        private const int CAPACITY = 5000;
+        private const string SAVE_ROOT_DIR = "Mod_IndependentStash";
+        private const string SAVE_FILE_NAME = "MyStash.sav";
         
-        static FieldInfo? _storeAllButtonField;
+        // ES3 Keys
+        private const string KEY_INVENTORY = "IndependentStash/Inventory/MyStash";
+        private const string KEY_VERSION = "IndependentStash/Version";
+        private const string KEY_OLD_INVENTORY = "Inventory/MyStash";
+        
+        // Reflection Field Names
+        private const string FIELD_STORE_ALL_BUTTON = "storeAllButton";
+        private const string FIELD_ON_START_LOOT = "OnStartLoot";
+        private const string FIELD_OTHER_INTERACTABLES = "otherInterablesInGroup";
+        private const string FIELD_MARKER_VISIBLE = "interactMarkerVisible";
+        private const string FIELD_DISPLAY_NAME_KEY = "displayNameKey";
+        private const string FIELD_INVENTORY_REF = "inventoryReference";
+        private const string FIELD_SHOW_SORT_BUTTON = "showSortButton";
+
+        // State
+        private static InventoryData? _snapshot;
+        private static Inventory? _runtimeInventory;
+        private static InteractableLootbox? _lootbox;
+        private static string? _filePath;
+        private static DateTime _lastSaveTime = DateTime.MinValue;
+
+        // Reflection Cache
+        private static FieldInfo? _storeAllButtonField;
+        private static FieldInfo? _otherInterablesInGroupField;
+        private static FieldInfo? _interactMarkerVisibleField;
+        private static FieldInfo? _displayNameKeyField;
+        private static FieldInfo? _inventoryReferenceField;
+        private static FieldInfo? _showSortButtonField;
+        private static FieldInfo? _onStartLootField;
 
         public static void RegisterEvents()
         {
@@ -38,92 +63,149 @@ namespace IndependentStash
             InteractableLootbox.OnStopLoot -= OnStopLoot;
         }
 
-        static void OnStartLoot(InteractableLootbox lootbox)
+        public static void Initialize()
         {
-            if (_lootbox != null && lootbox == _lootbox)
+            if (!string.IsNullOrWhiteSpace(_filePath)) return;
+
+            try
             {
-                EnableStoreAllButtonAsync().Forget();
+                string root = Path.Combine(Application.persistentDataPath, SAVE_ROOT_DIR);
+                if (!Directory.Exists(root)) Directory.CreateDirectory(root);
+                
+                _filePath = Path.Combine(root, SAVE_FILE_NAME);
+                
+                EnsureFileCached(_filePath);
+                Load();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] Initialize failed: {ex}");
             }
         }
 
-        static void OnStopLoot(InteractableLootbox lootbox)
+        private static void EnsureFileCached(string path)
         {
-            if (_lootbox != null && lootbox == _lootbox)
+            try
             {
-                if (LootView.Instance != null)
+                ES3.CacheFile(path);
+                if (!ES3.FileExists(path))
                 {
-                    var btn = GetStoreAllButton(LootView.Instance);
-                    if (btn != null) btn.onClick.RemoveListener(OnMyStoreAll);
+                    ES3.Save("Created", true, path);
+                    ES3.StoreCachedFile(path);
+                    ES3.CacheFile(path);
                 }
             }
-        }
-
-        static async UniTaskVoid EnableStoreAllButtonAsync()
-        {
-            // 等待一帧，确保LootView已经打开并完成了初始化（LootView会在OnStartLoot时调用Open，Open中会重置按钮状态）
-            await UniTask.Yield();
-            
-            if (LootView.Instance == null) return;
-            
-            var btn = GetStoreAllButton(LootView.Instance);
-            if (btn != null)
+            catch (Exception ex)
             {
-                // 强制显示按钮
-                btn.gameObject.SetActive(true);
-                
-                // 移除可能的重复监听器
-                btn.onClick.RemoveListener(OnMyStoreAll);
-                // 添加我们的自定义逻辑
-                btn.onClick.AddListener(OnMyStoreAll);
+                Debug.LogWarning($"[IndependentStash] EnsureFileCached warning: {ex.Message}");
+                // Try to recover
+                try
+                {
+                    ES3.Save("Created", true, path);
+                    ES3.StoreCachedFile(path);
+                    ES3.CacheFile(path);
+                }
+                catch { }
             }
         }
 
-        static Button? GetStoreAllButton(LootView view)
+        public static void Save()
         {
-            if (_storeAllButtonField == null)
-                _storeAllButtonField = typeof(LootView).GetField("storeAllButton", BindingFlags.Instance | BindingFlags.NonPublic);
-            return _storeAllButtonField?.GetValue(view) as Button;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
+                if (string.IsNullOrWhiteSpace(_filePath)) return;
+
+                // Debounce save (1 second)
+                if ((DateTime.UtcNow - _lastSaveTime) < TimeSpan.FromSeconds(1)) return;
+                _lastSaveTime = DateTime.UtcNow;
+
+                CreateBackup(_filePath);
+
+                if (_runtimeInventory != null)
+                {
+                    _snapshot = InventoryData.FromInventory(_runtimeInventory);
+                }
+
+                if (_snapshot == null)
+                {
+                    _snapshot = CreateEmptySnapshot();
+                }
+
+                var settings = new ES3Settings(_filePath) { location = ES3.Location.File };
+                ES3.Save(KEY_INVENTORY, _snapshot, _filePath, settings);
+                ES3.Save(KEY_VERSION, 1.0f, _filePath, settings);
+
+                try { ES3.CacheFile(_filePath); } catch { }
+                ES3.StoreCachedFile(_filePath);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] Save failed: {ex}");
+            }
         }
 
-        static void OnMyStoreAll()
+        public static void Load()
         {
-            // 再次检查当前打开的是否是我们的仓库
-            if (LootView.Instance == null || _runtimeInventory == null) return;
-            // LootView.TargetInventory 应该指向 _runtimeInventory
-            if (LootView.Instance.TargetInventory != _runtimeInventory) return;
-            
-            var character = LevelManager.Instance.MainCharacter;
-            if (character == null || character.CharacterItem == null) return;
-            
-            var sourceInventory = character.CharacterItem.Inventory;
-            if (sourceInventory == null) return;
+            if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
+            if (string.IsNullOrWhiteSpace(_filePath)) return;
 
-            int lastItemPosition = sourceInventory.GetLastItemPosition();
-            bool playedSound = false;
-            
-            for (int i = 0; i <= lastItemPosition; i++)
+            try
             {
-                if (sourceInventory.lockedIndexes.Contains(i)) continue;
-                
-                Item itemAt = sourceInventory.GetItemAt(i);
-                if (itemAt != null)
+                var settings = new ES3Settings(_filePath) { location = ES3.Location.File };
+                if (!ES3.FileExists(_filePath, settings)) return;
+
+                if (ES3.KeyExists(KEY_INVENTORY, _filePath, settings))
                 {
-                    // 尝试添加到我们的仓库
-                    if (!_runtimeInventory.AddAndMerge(itemAt)) break;
-                    
-                    if (!playedSound)
-                    {
-                        AudioManager.PlayPutItemSFX(itemAt);
-                        playedSound = true;
-                    }
+                    _snapshot = ES3.Load<InventoryData>(KEY_INVENTORY, _filePath, settings);
                 }
+                else if (ES3.KeyExists(KEY_OLD_INVENTORY, _filePath, settings))
+                {
+                    // Migration
+                    _snapshot = ES3.Load<InventoryData>(KEY_OLD_INVENTORY, _filePath, settings);
+                    ES3.Save(KEY_INVENTORY, _snapshot, _filePath, settings);
+                    ES3.DeleteKey(KEY_OLD_INVENTORY, _filePath, settings);
+                    Debug.Log("[IndependentStash] Migrated inventory data to new key.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] Load failed: {ex}");
+            }
+        }
+
+        public static void AttachInteractableToPlayerStorage()
+        {
+            if (LevelManager.Instance == null || !LevelManager.Instance.IsBaseLevel) return;
+            if (PlayerStorage.Instance == null) return;
+
+            // Check if object was destroyed
+            if (_lootbox != null && _lootbox.gameObject == null)
+            {
+                _lootbox = null;
+                _runtimeInventory = null;
+            }
+
+            if (_lootbox == null)
+            {
+                CreateStashObject();
+            }
+            else
+            {
+                // Ensure it's still in the group
+                TryInjectIntoGroup(PlayerStorage.Instance.InteractableLootBox, _lootbox);
+            }
+
+            // Ensure visible
+            if (_lootbox != null && _lootbox.gameObject != null)
+            {
+                _lootbox.gameObject.SetActive(true);
             }
         }
 
         public static void TryToggleStash()
         {
-            if (_lootbox == null) return;
-            if (LootView.Instance == null) return;
+            if (_lootbox == null || LootView.Instance == null) return;
 
             if (LootView.Instance.open && LootView.Instance.TargetInventory == _runtimeInventory)
             {
@@ -136,356 +218,302 @@ namespace IndependentStash
             }
         }
 
-        static void OpenStashInternal()
-        {
-            var lootbox = _lootbox;
-            if (lootbox == null) return;
+        #region Internal Logic
 
-            // 通过反射触发OnStartLoot事件，模拟打开仓库
-            var field = typeof(InteractableLootbox).GetField("OnStartLoot", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            if (field != null)
+        private static void CreateStashObject()
+        {
+            var go = new GameObject("PlayerStorage_Independent");
+            var parentLootbox = PlayerStorage.Instance.InteractableLootBox;
+            
+            go.transform.SetParent(parentLootbox.transform.parent, false);
+            go.transform.SetPositionAndRotation(parentLootbox.transform.position, parentLootbox.transform.rotation);
+
+            _lootbox = go.AddComponent<InteractableLootbox>();
+            SetDisplayName(_lootbox, "我的仓库");
+            _lootbox.InteractName = "我的仓库";
+            _lootbox.useDefaultInteractName = false;
+            
+            // Disable Pick All (critical for independent stash)
+            _lootbox.showPickAllButton = false;
+            
+            _lootbox.needInspect = false;
+            _lootbox.hideIfEmpty = null;
+            SetShowSortButton(_lootbox, true);
+            _lootbox.MarkerActive = false;
+            
+            // Create Inventory
+            if (_runtimeInventory == null)
             {
-                var del = field.GetValue(null) as MulticastDelegate;
+                CreateInventory();
+            }
+            
+            // Tagging
+            _lootbox.gameObject.tag = PlayerStorage.Instance.gameObject.tag;
+            
+            // Injection
+            TryInjectIntoGroup(parentLootbox, _lootbox);
+        }
+
+        private static void CreateInventory()
+        {
+            var invGo = new GameObject("IndependentStashInventory");
+            invGo.transform.SetParent(LevelManager.LootBoxInventoriesParent);
+            
+            _runtimeInventory = invGo.AddComponent<Inventory>();
+            _runtimeInventory.SetCapacity(CAPACITY);
+            
+            EnsureFilterProvider(_runtimeInventory);
+            SetInventoryReference(_lootbox!, _runtimeInventory);
+
+            if (_snapshot != null)
+            {
+                LoadInventoryDataAsync(_snapshot, _runtimeInventory).Forget();
+            }
+        }
+
+        private static void OnStartLoot(InteractableLootbox lootbox)
+        {
+            if (_lootbox != null && lootbox == _lootbox)
+            {
+                EnableStoreAllButtonAsync().Forget();
+            }
+        }
+
+        private static void OnStopLoot(InteractableLootbox lootbox)
+        {
+            if (_lootbox != null && lootbox == _lootbox)
+            {
+                if (LootView.Instance != null)
+                {
+                    var btn = GetStoreAllButton(LootView.Instance);
+                    if (btn != null) btn.onClick.RemoveListener(OnMyStoreAll);
+                }
+            }
+        }
+
+        private static async UniTaskVoid EnableStoreAllButtonAsync()
+        {
+            await UniTask.Yield(); // Wait for LootView to open/init
+
+            if (LootView.Instance == null) return;
+
+            var btn = GetStoreAllButton(LootView.Instance);
+            if (btn != null)
+            {
+                btn.gameObject.SetActive(true);
+                btn.onClick.RemoveListener(OnMyStoreAll); // Prevent duplicates
+                btn.onClick.AddListener(OnMyStoreAll);
+            }
+        }
+
+        private static void OnMyStoreAll()
+        {
+            if (LootView.Instance == null || _runtimeInventory == null) return;
+            if (LootView.Instance.TargetInventory != _runtimeInventory) return;
+
+            var character = LevelManager.Instance.MainCharacter;
+            if (character?.CharacterItem?.Inventory == null) return;
+
+            var sourceInventory = character.CharacterItem.Inventory;
+            int lastItemPosition = sourceInventory.GetLastItemPosition();
+            bool playedSound = false;
+
+            for (int i = 0; i <= lastItemPosition; i++)
+            {
+                if (sourceInventory.lockedIndexes.Contains(i)) continue;
+
+                Item itemAt = sourceInventory.GetItemAt(i);
+                if (itemAt != null)
+                {
+                    if (!_runtimeInventory.AddAndMerge(itemAt)) break; // Inventory full
+
+                    if (!playedSound)
+                    {
+                        AudioManager.PlayPutItemSFX(itemAt);
+                        playedSound = true;
+                    }
+                }
+            }
+        }
+
+        private static void OpenStashInternal()
+        {
+            if (_lootbox == null) return;
+
+            if (_onStartLootField == null)
+            {
+                _onStartLootField = typeof(InteractableLootbox).GetField(FIELD_ON_START_LOOT, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            }
+
+            if (_onStartLootField != null)
+            {
+                var del = _onStartLootField.GetValue(null) as MulticastDelegate;
                 if (del != null)
                 {
                     foreach (var handler in del.GetInvocationList())
                     {
                         try
                         {
-                            handler.Method.Invoke(handler.Target, new object[] { lootbox });
+                            handler.Method.Invoke(handler.Target, new object[] { _lootbox });
                         }
                         catch (Exception ex)
                         {
-                            Debug.LogError("Error invoking OnStartLoot: " + ex.Message);
+                            Debug.LogError($"[IndependentStash] Error invoking OnStartLoot: {ex}");
                         }
                     }
                 }
             }
         }
 
-        public static void Initialize()
+        private static void CreateBackup(string path)
         {
-            if (string.IsNullOrWhiteSpace(_filePath))
+            if (!ES3.FileExists(path)) return;
+            
+            var backupPath = path + ".backup";
+            try
             {
-                var root = Path.Combine(Application.persistentDataPath, "Mod_IndependentStash");
-                if (!Directory.Exists(root)) Directory.CreateDirectory(root);
-                _filePath = Path.Combine(root, "MyStash.sav");
+                ES3.CopyFile(path, backupPath);
+                Debug.Log("[IndependentStash] Created backup save file");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[IndependentStash] Failed to create backup: {ex.Message}");
+            }
+        }
+
+        private static InventoryData CreateEmptySnapshot()
+        {
+            var temp = new GameObject("IndependentStashTempInv");
+            var inv = temp.AddComponent<Inventory>();
+            inv.SetCapacity(CAPACITY);
+            var data = InventoryData.FromInventory(inv);
+            UnityEngine.Object.Destroy(temp);
+            return data;
+        }
+
+        private static async UniTaskVoid LoadInventoryDataAsync(InventoryData snapshot, Inventory inventory)
+        {
+            if (snapshot == null || inventory == null) return;
+
+            try
+            {
+                await UniTask.Yield(PlayerLoopTiming.Update);
+                await InventoryData.LoadIntoInventory(snapshot, inventory);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] LoadInventoryDataAsync failed: {ex}");
+                
+                // Recovery logic
+                bool hasExistingItems = false;
                 try
                 {
-                    ES3.CacheFile(_filePath);
-                    if (!ES3.FileExists(_filePath))
-                    {
-                        ES3.Save("Created", true, _filePath);
-                        ES3.StoreCachedFile(_filePath);
-                        ES3.CacheFile(_filePath);
-                    }
+                    if (inventory != null)
+                        hasExistingItems = inventory.GetLastItemPosition() >= 0;
                 }
-                catch
+                catch { }
+
+                if (!hasExistingItems)
                 {
-                    try
-                    {
-                        ES3.Save("Created", true, _filePath);
-                        ES3.StoreCachedFile(_filePath);
-                        ES3.CacheFile(_filePath);
-                    }
-                    catch {}
+                    Debug.LogWarning("[IndependentStash] Initializing empty inventory due to load failure");
+                    var emptySnapshot = CreateEmptySnapshot();
+                    await InventoryData.LoadIntoInventory(emptySnapshot, inventory);
                 }
-                Load();
+                else
+                {
+                    Debug.LogWarning("[IndependentStash] Preserving existing items despite load failure");
+                }
             }
         }
 
-        public static void AttachInteractableToPlayerStorage() 
-        { 
-            if (LevelManager.Instance == null || !LevelManager.Instance.IsBaseLevel) return; 
-            if (PlayerStorage.Instance == null) return; 
-            
-            // 修复：检查_lootbox是否已被销毁，是则重新创建
-            if (_lootbox != null && _lootbox.gameObject == null)
-            {
-                _lootbox = null;
-                _runtimeInventory = null;
-            }
-            
-            if (_lootbox == null) 
-            { 
-                // 创建一个空的游戏对象作为逻辑载体 
-                var go = new GameObject("PlayerStorage_Independent"); 
-                go.transform.SetParent(PlayerStorage.Instance.InteractableLootBox.transform.parent, false); 
-                go.transform.position = PlayerStorage.Instance.InteractableLootBox.transform.position; 
-                go.transform.rotation = PlayerStorage.Instance.InteractableLootBox.transform.rotation; 
-                
-                // 添加组件并手动配置 
-                _lootbox = go.AddComponent<InteractableLootbox>(); 
-                SetDisplayName(_lootbox, "我的仓库"); 
-                _lootbox.InteractName = "我的仓库"; 
-                _lootbox.useDefaultInteractName = false; 
-                
-                // 关键：禁用Pick All按钮，这是自动拾取的核心入口 
-                _lootbox.showPickAllButton = false; 
-                
-                // 其他重要设置，匹配官方仓库 
-                _lootbox.needInspect = false; 
-                _lootbox.hideIfEmpty = null; 
-                SetShowSortButton(_lootbox, true); 
-                _lootbox.MarkerActive = false; 
-                
-                // 创建独立的库存对象，不与官方仓库共享 
-                if (_runtimeInventory == null) 
-                { 
-                    var invGo = new GameObject("IndependentStashInventory"); 
-                    invGo.transform.SetParent(LevelManager.LootBoxInventoriesParent); 
-                    _runtimeInventory = invGo.AddComponent<Inventory>(); 
-                    _runtimeInventory.SetCapacity(CAPACITY); 
-                    EnsureFilterProvider(_runtimeInventory); 
-                    SetInventoryReference(_lootbox, _runtimeInventory); 
-                    
-                    if (_snapshot != null) 
-                    { 
-                        // 异步加载但添加等待机制，确保物品数据正确加载 
-                        LoadInventoryDataAsync(_snapshot, _runtimeInventory).Forget(); 
-                    } 
-                } 
-                
-                // 设置游戏对象的标签，避免被自动拾取类MOD识别 
-                _lootbox.gameObject.tag = PlayerStorage.Instance.gameObject.tag; 
- 
-                // 将其注入到官方仓库组，使其作为选项出现在原仓库菜单中 
-                TryInjectIntoGroup(PlayerStorage.Instance.InteractableLootBox, _lootbox); 
-            } 
-            else
-            {
-                // 修复：确保对象始终在组中
-                TryInjectIntoGroup(PlayerStorage.Instance.InteractableLootBox, _lootbox);
-            }
-            
-            // 确保仓库只在基地场景中可见和交互 
-            if (_lootbox != null && _lootbox.gameObject != null)
-            {
-                _lootbox.gameObject.SetActive(true);
-            }
-            
-            // inventory is created per-open; filters applied on creation 
-        }
-
-        // 缓存反射字段以提高性能
-        static FieldInfo? _otherInterablesInGroupField;
-        static FieldInfo? _interactMarkerVisibleField;
-        
-        static void TryInjectIntoGroup(InteractableBase master, InteractableBase other)
-        {
-            if (master == null || other == null) return;
-            
-            // 延迟初始化反射字段
-            if (_otherInterablesInGroupField == null)
-                _otherInterablesInGroupField = typeof(InteractableBase).GetField("otherInterablesInGroup", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_interactMarkerVisibleField == null)
-                _interactMarkerVisibleField = typeof(InteractableBase).GetField("interactMarkerVisible", BindingFlags.Instance | BindingFlags.NonPublic);
-            
-            if (_otherInterablesInGroupField == null) return;
-            var list = _otherInterablesInGroupField.GetValue(master) as System.Collections.Generic.List<InteractableBase>;
-            if (list == null) return;
-            if (!list.Contains(other)) list.Add(other);
-            if (_interactMarkerVisibleField != null) _interactMarkerVisibleField.SetValue(other, false);
-        }
-
-        // 缓存反射字段以提高性能
-        static FieldInfo? _displayNameKeyField;
-        static FieldInfo? _inventoryReferenceField;
-        static FieldInfo? _showSortButtonField;
-        
-        static void SetDisplayName(InteractableLootbox lootbox, string text)
-        {
-            if (_displayNameKeyField == null)
-                _displayNameKeyField = typeof(InteractableLootbox).GetField("displayNameKey", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_displayNameKeyField != null) _displayNameKeyField.SetValue(lootbox, text);
-        }
-
-        static void SetInventoryReference(InteractableLootbox lootbox, Inventory? inventory)
-        {
-            if (_inventoryReferenceField == null)
-                _inventoryReferenceField = typeof(InteractableLootbox).GetField("inventoryReference", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_inventoryReferenceField != null && inventory != null) _inventoryReferenceField.SetValue(lootbox, inventory);
-        }
-
-        static Inventory? GetInventoryReference(InteractableLootbox lootbox)
-        {
-            if (_inventoryReferenceField == null)
-                _inventoryReferenceField = typeof(InteractableLootbox).GetField("inventoryReference", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_inventoryReferenceField == null) return null;
-            return _inventoryReferenceField.GetValue(lootbox) as Inventory;
-        }
-
-        static void SetShowSortButton(InteractableLootbox lootbox, bool value)
-        {
-            if (_showSortButtonField == null)
-                _showSortButtonField = typeof(InteractableLootbox).GetField("showSortButton", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_showSortButtonField != null) _showSortButtonField.SetValue(lootbox, value);
-        }
-
-        static void EnsureFilterProvider(Inventory target)
+        private static void EnsureFilterProvider(Inventory target)
         {
             if (target == null) return;
-            InventoryFilterProvider? mine = target.GetComponent<InventoryFilterProvider>();
-            if (mine == null) mine = target.gameObject.AddComponent<InventoryFilterProvider>();
             
+            var mine = target.GetComponent<InventoryFilterProvider>() ?? target.gameObject.AddComponent<InventoryFilterProvider>();
+
             var officialInv = GetInventoryReference(PlayerStorage.Instance.InteractableLootBox);
-            InventoryFilterProvider? officialProvider = null;
-            if (officialInv != null) officialProvider = officialInv.GetComponent<InventoryFilterProvider>();
-            if (officialProvider != null && officialProvider.entries != null && officialProvider.entries.Length > 0)
+            var officialProvider = officialInv?.GetComponent<InventoryFilterProvider>();
+
+            if (officialProvider?.entries != null && officialProvider.entries.Length > 0)
             {
                 mine.entries = officialProvider.entries;
                 return;
             }
-            
+
+            // Fallback default filters
             var tags = GameplayDataSettings.Tags;
             mine.entries = new InventoryFilterProvider.FilterEntry[]
             {
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_All", icon = null, requireTags = Array.Empty<Tag>()},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Weapon", icon = null, requireTags = new[]{ tags.Gun }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Bullet", icon = null, requireTags = new[]{ tags.Bullet }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Equipment", icon = null, requireTags = new[]{ tags.Armor, tags.Helmat, tags.Backpack }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Accessory", icon = null, requireTags = new[]{ TagUtilities.TagFromString("Attachment") ?? tags.Special }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Totem", icon = null, requireTags = new[]{ TagUtilities.TagFromString("Totem") ?? tags.Special }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Medic", icon = null, requireTags = new[]{ TagUtilities.TagFromString("Medicine") ?? tags.Special }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Food", icon = null, requireTags = new[]{ TagUtilities.TagFromString("Food") ?? tags.Bait }},
-                new InventoryFilterProvider.FilterEntry{ name = "ItemFilter_Other", icon = null, requireTags = new[]{ tags.Special }}
+                new() { name = "ItemFilter_All", requireTags = Array.Empty<Tag>() },
+                new() { name = "ItemFilter_Weapon", requireTags = new[] { tags.Gun } },
+                new() { name = "ItemFilter_Bullet", requireTags = new[] { tags.Bullet } },
+                new() { name = "ItemFilter_Equipment", requireTags = new[] { tags.Armor, tags.Helmat, tags.Backpack } },
+                new() { name = "ItemFilter_Accessory", requireTags = new[] { TagUtilities.TagFromString("Attachment") ?? tags.Special } },
+                new() { name = "ItemFilter_Totem", requireTags = new[] { TagUtilities.TagFromString("Totem") ?? tags.Special } },
+                new() { name = "ItemFilter_Medic", requireTags = new[] { TagUtilities.TagFromString("Medicine") ?? tags.Special } },
+                new() { name = "ItemFilter_Food", requireTags = new[] { TagUtilities.TagFromString("Food") ?? tags.Bait } },
+                new() { name = "ItemFilter_Other", requireTags = new[] { tags.Special } }
             };
         }
 
-        public static void Save() 
-        { 
-            try 
-            { 
-                if (string.IsNullOrWhiteSpace(_filePath)) Initialize(); 
-                if (string.IsNullOrWhiteSpace(_filePath)) return; 
-                if ((DateTime.UtcNow - _lastSaveTime) < TimeSpan.FromSeconds(1)) return; 
-                _lastSaveTime = DateTime.UtcNow; 
-                
-                // 改进：创建备份文件
-                if (ES3.FileExists(_filePath))
-                {
-                    var backupPath = _filePath + ".backup";
-                    try
-                    {
-                        ES3.CopyFile(_filePath, backupPath);
-                        Debug.Log("IndependentStash: Created backup save file");
-                    }
-                    catch (Exception backupEx)
-                    {
-                        Debug.LogWarning("IndependentStash: Failed to create backup: " + backupEx.Message);
-                    }
-                }
-                
-                if (_runtimeInventory != null) 
-                { 
-                    _snapshot = InventoryData.FromInventory(_runtimeInventory); 
-                } 
-                if (_snapshot == null) 
-                { 
-                    // ensure we at least persist an empty snapshot 
-                    var temp = new GameObject("IndependentStashTempInv"); 
-                    var inv = temp.AddComponent<Inventory>(); 
-                    inv.SetCapacity(CAPACITY); 
-                    _snapshot = InventoryData.FromInventory(inv); 
-                    UnityEngine.Object.Destroy(temp); 
-                } 
-                
-                // 使用唯一的键名，避免与其他mod冲突 
-                var settings = new ES3Settings(_filePath) { location = ES3.Location.File }; 
-                ES3.Save("IndependentStash/Inventory/MyStash", _snapshot, _filePath, settings); 
-                ES3.Save("IndependentStash/Version", 1.0f, _filePath, settings); 
-                
-                try { ES3.CacheFile(_filePath); } catch { } 
-                ES3.StoreCachedFile(_filePath); 
-            } 
-            catch (Exception ex) 
-            { 
-                Debug.LogError("IndependentStash Save failed: " + ex.Message); 
-            } 
-        }
+        #endregion
 
-        /// <summary> 
-        /// 异步加载库存数据，确保加载完成并处理可能的错误 
-        /// </summary> 
-        static async UniTaskVoid LoadInventoryDataAsync(InventoryData snapshot, Inventory inventory) 
-        { 
-            if (snapshot == null || inventory == null) return; 
-            
-            try 
-            { 
-                // 修复：等待一帧，避免与场景加载冲突
-                await UniTask.Yield(PlayerLoopTiming.Update);
-                
-                // 确保异步加载完成，避免物品数据不一致 
-                await InventoryData.LoadIntoInventory(snapshot, inventory); 
-            } 
-            catch (Exception ex) 
-            { 
-                Debug.LogError("IndependentStash LoadInventoryDataAsync failed: " + ex.Message);
-                
-                // 改进：记录加载失败的快照信息，便于调试
-                // 修正：移除对不存在的slots属性的访问
-                Debug.LogWarning($"IndependentStash: Failed to load snapshot");
-                
-                // 改进：检查库存是否已有物品，避免不必要的覆盖
-                bool hasExistingItems = false;
-                try
-                {
-                    // 检查库存是否已有物品
-                    if (inventory != null)
-                    {
-                        // 通过反射或其他方式检查库存中是否有物品
-                        // 这里简化处理：如果有快照但加载失败，尽量不覆盖现有数据
-                        hasExistingItems = inventory.GetLastItemPosition() >= 0;
-                    }
-                }
-                catch
-                {
-                    // 如果检查失败，保守处理
-                    hasExistingItems = false;
-                }
-                
-                // 只有库存为空时才用空库存初始化
-                if (!hasExistingItems)
-                {
-                    Debug.LogWarning("IndependentStash: Initializing empty inventory due to load failure");
-                    var temp = new GameObject("IndependentStashTempInv"); 
-                    var inv = temp.AddComponent<Inventory>(); 
-                    inv.SetCapacity(CAPACITY); 
-                    var emptySnapshot = InventoryData.FromInventory(inv); 
-                    await InventoryData.LoadIntoInventory(emptySnapshot, inventory); 
-                    UnityEngine.Object.Destroy(temp);
-                }
-                else
-                {
-                    Debug.LogWarning("IndependentStash: Preserving existing items despite load failure");
-                }
-            } 
-        }
-        
-        public static void Load()
+        #region Reflection Helpers
+
+        private static Button? GetStoreAllButton(LootView view)
         {
-            if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
-            if (string.IsNullOrWhiteSpace(_filePath)) return;
-            var settings = new ES3Settings(_filePath) { location = ES3.Location.File };
-            if (ES3.FileExists(_filePath, settings))
-            {
-                // 优先使用新的唯一键名，确保与其他mod隔离
-                if (ES3.KeyExists("IndependentStash/Inventory/MyStash", _filePath, settings))
-                {
-                    _snapshot = ES3.Load<InventoryData>("IndependentStash/Inventory/MyStash", _filePath, settings);
-                }
-                // 向后兼容：支持加载旧版本保存的数据
-                else if (ES3.KeyExists("Inventory/MyStash", _filePath, settings))
-                {
-                    _snapshot = ES3.Load<InventoryData>("Inventory/MyStash", _filePath, settings);
-                    // 自动迁移到新版本键名
-                    ES3.Save("IndependentStash/Inventory/MyStash", _snapshot, _filePath, settings);
-                    ES3.DeleteKey("Inventory/MyStash", _filePath, settings);
-                }
-            }
+            if (_storeAllButtonField == null)
+                _storeAllButtonField = typeof(LootView).GetField(FIELD_STORE_ALL_BUTTON, BindingFlags.Instance | BindingFlags.NonPublic);
+            return _storeAllButtonField?.GetValue(view) as Button;
         }
 
-        
+        private static void TryInjectIntoGroup(InteractableBase master, InteractableBase other)
+        {
+            if (master == null || other == null) return;
+
+            if (_otherInterablesInGroupField == null)
+                _otherInterablesInGroupField = typeof(InteractableBase).GetField(FIELD_OTHER_INTERACTABLES, BindingFlags.Instance | BindingFlags.NonPublic);
+            if (_interactMarkerVisibleField == null)
+                _interactMarkerVisibleField = typeof(InteractableBase).GetField(FIELD_MARKER_VISIBLE, BindingFlags.Instance | BindingFlags.NonPublic);
+
+            var list = _otherInterablesInGroupField?.GetValue(master) as List<InteractableBase>;
+            if (list != null && !list.Contains(other))
+            {
+                list.Add(other);
+            }
+            
+            _interactMarkerVisibleField?.SetValue(other, false);
+        }
+
+        private static void SetDisplayName(InteractableLootbox lootbox, string text)
+        {
+            if (_displayNameKeyField == null)
+                _displayNameKeyField = typeof(InteractableLootbox).GetField(FIELD_DISPLAY_NAME_KEY, BindingFlags.Instance | BindingFlags.NonPublic);
+            _displayNameKeyField?.SetValue(lootbox, text);
+        }
+
+        private static void SetInventoryReference(InteractableLootbox lootbox, Inventory inventory)
+        {
+            if (_inventoryReferenceField == null)
+                _inventoryReferenceField = typeof(InteractableLootbox).GetField(FIELD_INVENTORY_REF, BindingFlags.Instance | BindingFlags.NonPublic);
+            _inventoryReferenceField?.SetValue(lootbox, inventory);
+        }
+
+        private static Inventory? GetInventoryReference(InteractableLootbox lootbox)
+        {
+            if (_inventoryReferenceField == null)
+                _inventoryReferenceField = typeof(InteractableLootbox).GetField(FIELD_INVENTORY_REF, BindingFlags.Instance | BindingFlags.NonPublic);
+            return _inventoryReferenceField?.GetValue(lootbox) as Inventory;
+        }
+
+        private static void SetShowSortButton(InteractableLootbox lootbox, bool value)
+        {
+            if (_showSortButtonField == null)
+                _showSortButtonField = typeof(InteractableLootbox).GetField(FIELD_SHOW_SORT_BUTTON, BindingFlags.Instance | BindingFlags.NonPublic);
+            _showSortButtonField?.SetValue(lootbox, value);
+        }
+
+        #endregion
     }
 }
