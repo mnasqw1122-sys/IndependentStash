@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using Duckov.UI;
 using ItemStatsSystem;
 using UnityEngine;
@@ -10,6 +11,12 @@ namespace IndependentStash
 {
     public class ModBehaviour : Duckov.Modding.ModBehaviour
     {
+        protected override void OnAfterSetup()
+        {
+            base.OnAfterSetup();
+            ModConfig.Load(Path.Combine(info.path, "config.ini"));
+        }
+
         private void OnEnable()
         {
             LevelManager.OnAfterLevelInitialized += OnAfterLevelInitialized;
@@ -85,7 +92,7 @@ namespace IndependentStash
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.BackQuote))
+            if (Input.GetKeyDown(ModConfig.OpenStashKey))
             {
                 MyStashManager.TryToggleStash();
             }

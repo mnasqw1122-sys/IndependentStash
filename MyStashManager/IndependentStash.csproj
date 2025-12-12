@@ -8,7 +8,16 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="$(DuckovPath)$(SubPath)TeamSoda.*">
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(DuckovPath)$(SubPath)Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="TeamSoda.Duckov.Core">
+      <HintPath>$(DuckovPath)$(SubPath)TeamSoda.Duckov.Core.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="TeamSoda.Duckov.Utilities">
+      <HintPath>$(DuckovPath)$(SubPath)TeamSoda.Duckov.Utilities.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="ES3">
@@ -19,7 +28,20 @@
       <HintPath>$(DuckovPath)$(SubPath)UniTask.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="$(DuckovPath)$(SubPath)ItemStatsSystem.dll">
+    <Reference Include="ItemStatsSystem">
+      <HintPath>$(DuckovPath)$(SubPath)ItemStatsSystem.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Plugins">
+      <HintPath>$(DuckovPath)$(SubPath)Plugins.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SodaLocalization">
+      <HintPath>$(DuckovPath)$(SubPath)SodaLocalization.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Sirenix.Utilities">
+      <HintPath>$(DuckovPath)$(SubPath)Sirenix.Utilities.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="$(DuckovPath)$(SubPath)Unity*">

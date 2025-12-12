@@ -41,6 +41,7 @@ namespace IndependentStash
         private static InteractableLootbox? _lootbox;
         private static string? _filePath;
         private static DateTime _lastSaveTime = DateTime.MinValue;
+        private static bool _isDataReady = false; // Safety flag to prevent overwriting save with partial data
 
         // Reflection Cache
         private static FieldInfo? _storeAllButtonField;
@@ -75,6 +76,10 @@ namespace IndependentStash
                 _filePath = Path.Combine(root, SAVE_FILE_NAME);
                 
                 EnsureFileCached(_filePath);
+                
+                // Backup existing save on startup before we touch it
+                CreateBackup(_filePath, "SessionStart");
+                
                 Load();
             }
             catch (Exception ex)
@@ -116,11 +121,19 @@ namespace IndependentStash
                 if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
                 if (string.IsNullOrWhiteSpace(_filePath)) return;
 
+                // SAFETY CHECK: If data wasn't loaded correctly, DO NOT SAVE.
+                // This prevents overwriting a good save with a partial/corrupted state.
+                if (!_isDataReady)
+                {
+                    Debug.LogWarning("[IndependentStash] Save skipped: Data is not ready or failed to load previously.");
+                    return;
+                }
+
                 // Debounce save (1 second)
                 if ((DateTime.UtcNow - _lastSaveTime) < TimeSpan.FromSeconds(1)) return;
                 _lastSaveTime = DateTime.UtcNow;
 
-                CreateBackup(_filePath);
+                CreateBackup(_filePath, "LastGood");
 
                 if (_runtimeInventory != null)
                 {
@@ -149,11 +162,18 @@ namespace IndependentStash
         {
             if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
             if (string.IsNullOrWhiteSpace(_filePath)) return;
+            
+            _isDataReady = false; // Reset ready flag
 
             try
             {
                 var settings = new ES3Settings(_filePath) { location = ES3.Location.File };
-                if (!ES3.FileExists(_filePath, settings)) return;
+                if (!ES3.FileExists(_filePath, settings))
+                {
+                    // New file, so it's ready (empty)
+                    _isDataReady = true;
+                    return;
+                }
 
                 if (ES3.KeyExists(KEY_INVENTORY, _filePath, settings))
                 {
@@ -171,6 +191,7 @@ namespace IndependentStash
             catch (Exception ex)
             {
                 Debug.LogError($"[IndependentStash] Load failed: {ex}");
+                _isDataReady = false; // Mark as failed
             }
         }
 
@@ -222,13 +243,32 @@ namespace IndependentStash
 
         private static void CreateStashObject()
         {
+            // Create inactive to prevent Awake from running immediately
+            // This allows us to fix the null List<InteractableBase> issue before Awake triggers
             var go = new GameObject("PlayerStorage_Independent");
+            go.SetActive(false); 
+            
             var parentLootbox = PlayerStorage.Instance.InteractableLootBox;
             
             go.transform.SetParent(parentLootbox.transform.parent, false);
             go.transform.SetPositionAndRotation(parentLootbox.transform.position, parentLootbox.transform.rotation);
 
             _lootbox = go.AddComponent<InteractableLootbox>();
+
+            // FIX: Initialize the list via reflection before Awake runs
+            // InteractableBase.Awake iterates this list, and it's null when added via AddComponent
+            try
+            {
+                if (_otherInterablesInGroupField == null)
+                    _otherInterablesInGroupField = typeof(InteractableBase).GetField(FIELD_OTHER_INTERACTABLES, BindingFlags.Instance | BindingFlags.NonPublic);
+                
+                _otherInterablesInGroupField?.SetValue(_lootbox, new List<InteractableBase>());
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] Failed to fix otherInterablesInGroup: {ex}");
+            }
+
             SetDisplayName(_lootbox, "我的仓库");
             _lootbox.InteractName = "我的仓库";
             _lootbox.useDefaultInteractName = false;
@@ -250,6 +290,9 @@ namespace IndependentStash
             // Tagging
             _lootbox.gameObject.tag = PlayerStorage.Instance.gameObject.tag;
             
+            // Activate now that everything is set up
+            go.SetActive(true);
+
             // Injection
             TryInjectIntoGroup(parentLootbox, _lootbox);
         }
@@ -268,6 +311,11 @@ namespace IndependentStash
             if (_snapshot != null)
             {
                 LoadInventoryDataAsync(_snapshot, _runtimeInventory).Forget();
+            }
+            else
+            {
+                // No snapshot means fresh inventory, so data is ready
+                _isDataReady = true;
             }
         }
 
@@ -365,19 +413,23 @@ namespace IndependentStash
             }
         }
 
-        private static void CreateBackup(string path)
+        private static void CreateBackup(string path, string suffix)
         {
             if (!ES3.FileExists(path)) return;
             
-            var backupPath = path + ".backup";
+            var backupPath = $"{path}.{suffix}.backup";
             try
             {
+                if (ES3.FileExists(backupPath))
+                {
+                    ES3.DeleteFile(backupPath);
+                }
                 ES3.CopyFile(path, backupPath);
-                Debug.Log("[IndependentStash] Created backup save file");
+                Debug.Log($"[IndependentStash] Created backup save file: {suffix}");
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[IndependentStash] Failed to create backup: {ex.Message}");
+                Debug.LogWarning($"[IndependentStash] Failed to create backup ({suffix}): {ex.Message}");
             }
         }
 
@@ -395,16 +447,29 @@ namespace IndependentStash
         {
             if (snapshot == null || inventory == null) return;
 
+            // Mark data as NOT ready while loading
+            _isDataReady = false;
+
             try
             {
                 await UniTask.Yield(PlayerLoopTiming.Update);
+                
+                // CRITICAL: We wrap the load in a try-catch to detect partial failures.
+                // If this fails, we assume the data is corrupted/incomplete and block saving.
                 await InventoryData.LoadIntoInventory(snapshot, inventory);
+                
+                // If we get here, load was successful
+                _isDataReady = true;
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] LoadInventoryDataAsync failed: {ex}");
+                Debug.LogError($"[IndependentStash] LoadInventoryDataAsync CRITICAL FAILURE: {ex}");
+                Debug.LogError("[IndependentStash] Saving is now DISABLED to prevent data loss. Please check your mods.");
                 
-                // Recovery logic
+                // We deliberately leave _isDataReady = false here.
+                
+                // Recovery logic: Try to load what we can, or initialize empty if totally broken
+                // But we still don't allow saving over the old file.
                 bool hasExistingItems = false;
                 try
                 {
@@ -415,13 +480,13 @@ namespace IndependentStash
 
                 if (!hasExistingItems)
                 {
-                    Debug.LogWarning("[IndependentStash] Initializing empty inventory due to load failure");
-                    var emptySnapshot = CreateEmptySnapshot();
-                    await InventoryData.LoadIntoInventory(emptySnapshot, inventory);
-                }
-                else
-                {
-                    Debug.LogWarning("[IndependentStash] Preserving existing items despite load failure");
+                    Debug.LogWarning("[IndependentStash] Initializing empty inventory due to load failure (ReadOnly Mode)");
+                    try
+                    {
+                        var emptySnapshot = CreateEmptySnapshot();
+                        await InventoryData.LoadIntoInventory(emptySnapshot, inventory);
+                    }
+                    catch {}
                 }
             }
         }
@@ -442,6 +507,7 @@ namespace IndependentStash
             }
 
             // Fallback default filters
+            // Note: We don't have access to the original icons here, so the filter buttons will be icon-less but functional.
             var tags = GameplayDataSettings.Tags;
             mine.entries = new InventoryFilterProvider.FilterEntry[]
             {
@@ -472,46 +538,82 @@ namespace IndependentStash
         {
             if (master == null || other == null) return;
 
-            if (_otherInterablesInGroupField == null)
-                _otherInterablesInGroupField = typeof(InteractableBase).GetField(FIELD_OTHER_INTERACTABLES, BindingFlags.Instance | BindingFlags.NonPublic);
-            if (_interactMarkerVisibleField == null)
-                _interactMarkerVisibleField = typeof(InteractableBase).GetField(FIELD_MARKER_VISIBLE, BindingFlags.Instance | BindingFlags.NonPublic);
-
-            var list = _otherInterablesInGroupField?.GetValue(master) as List<InteractableBase>;
-            if (list != null && !list.Contains(other))
+            try
             {
-                list.Add(other);
+                if (_otherInterablesInGroupField == null)
+                    _otherInterablesInGroupField = typeof(InteractableBase).GetField(FIELD_OTHER_INTERACTABLES, BindingFlags.Instance | BindingFlags.NonPublic);
+                if (_interactMarkerVisibleField == null)
+                    _interactMarkerVisibleField = typeof(InteractableBase).GetField(FIELD_MARKER_VISIBLE, BindingFlags.Instance | BindingFlags.NonPublic);
+
+                var list = _otherInterablesInGroupField?.GetValue(master) as List<InteractableBase>;
+                if (list != null && !list.Contains(other))
+                {
+                    list.Add(other);
+                }
+                
+                _interactMarkerVisibleField?.SetValue(other, false);
             }
-            
-            _interactMarkerVisibleField?.SetValue(other, false);
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] TryInjectIntoGroup failed: {ex}");
+            }
         }
 
         private static void SetDisplayName(InteractableLootbox lootbox, string text)
         {
-            if (_displayNameKeyField == null)
-                _displayNameKeyField = typeof(InteractableLootbox).GetField(FIELD_DISPLAY_NAME_KEY, BindingFlags.Instance | BindingFlags.NonPublic);
-            _displayNameKeyField?.SetValue(lootbox, text);
+            try
+            {
+                if (_displayNameKeyField == null)
+                    _displayNameKeyField = typeof(InteractableLootbox).GetField(FIELD_DISPLAY_NAME_KEY, BindingFlags.Instance | BindingFlags.NonPublic);
+                _displayNameKeyField?.SetValue(lootbox, text);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] SetDisplayName failed: {ex}");
+            }
         }
 
         private static void SetInventoryReference(InteractableLootbox lootbox, Inventory inventory)
         {
-            if (_inventoryReferenceField == null)
-                _inventoryReferenceField = typeof(InteractableLootbox).GetField(FIELD_INVENTORY_REF, BindingFlags.Instance | BindingFlags.NonPublic);
-            _inventoryReferenceField?.SetValue(lootbox, inventory);
+            try
+            {
+                if (_inventoryReferenceField == null)
+                    _inventoryReferenceField = typeof(InteractableLootbox).GetField(FIELD_INVENTORY_REF, BindingFlags.Instance | BindingFlags.NonPublic);
+                _inventoryReferenceField?.SetValue(lootbox, inventory);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] SetInventoryReference failed: {ex}");
+            }
         }
 
         private static Inventory? GetInventoryReference(InteractableLootbox lootbox)
         {
-            if (_inventoryReferenceField == null)
-                _inventoryReferenceField = typeof(InteractableLootbox).GetField(FIELD_INVENTORY_REF, BindingFlags.Instance | BindingFlags.NonPublic);
-            return _inventoryReferenceField?.GetValue(lootbox) as Inventory;
+            try
+            {
+                if (_inventoryReferenceField == null)
+                    _inventoryReferenceField = typeof(InteractableLootbox).GetField(FIELD_INVENTORY_REF, BindingFlags.Instance | BindingFlags.NonPublic);
+                return _inventoryReferenceField?.GetValue(lootbox) as Inventory;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] GetInventoryReference failed: {ex}");
+                return null;
+            }
         }
 
         private static void SetShowSortButton(InteractableLootbox lootbox, bool value)
         {
-            if (_showSortButtonField == null)
-                _showSortButtonField = typeof(InteractableLootbox).GetField(FIELD_SHOW_SORT_BUTTON, BindingFlags.Instance | BindingFlags.NonPublic);
-            _showSortButtonField?.SetValue(lootbox, value);
+            try
+            {
+                if (_showSortButtonField == null)
+                    _showSortButtonField = typeof(InteractableLootbox).GetField(FIELD_SHOW_SORT_BUTTON, BindingFlags.Instance | BindingFlags.NonPublic);
+                _showSortButtonField?.SetValue(lootbox, value);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[IndependentStash] SetShowSortButton failed: {ex}");
+            }
         }
 
         #endregion
