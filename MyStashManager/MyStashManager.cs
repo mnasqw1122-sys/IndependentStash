@@ -14,56 +14,68 @@ using Cysharp.Threading.Tasks;
 
 namespace IndependentStash
 {
+    /// <summary>
+    /// 我的仓库管理器 - 负责独立仓库的创建、管理和数据持久化
+    /// </summary>
     public static class MyStashManager
     {
-        // Constants
-        private const int CAPACITY = 5000;
-        private const string SAVE_ROOT_DIR = "Mod_IndependentStash";
-        private const string SAVE_FILE_NAME = "MyStash.sav";
+        // 常量定义
+        private const int CAPACITY = 5000; // 仓库容量
+        private const string SAVE_ROOT_DIR = "Mod_IndependentStash"; // 保存根目录
+        private const string SAVE_FILE_NAME = "MyStash.sav"; // 保存文件名
         
-        // ES3 Keys
-        private const string KEY_INVENTORY = "IndependentStash/Inventory/MyStash";
-        private const string KEY_VERSION = "IndependentStash/Version";
-        private const string KEY_OLD_INVENTORY = "Inventory/MyStash";
+        // ES3 键名
+        private const string KEY_INVENTORY = "IndependentStash/Inventory/MyStash"; // 库存数据键
+        private const string KEY_VERSION = "IndependentStash/Version"; // 版本号键
+        private const string KEY_OLD_INVENTORY = "Inventory/MyStash"; // 旧库存数据键（用于迁移）
         
-        // Reflection Field Names
-        private const string FIELD_STORE_ALL_BUTTON = "storeAllButton";
-        private const string FIELD_ON_START_LOOT = "OnStartLoot";
-        private const string FIELD_OTHER_INTERACTABLES = "otherInterablesInGroup";
-        private const string FIELD_MARKER_VISIBLE = "interactMarkerVisible";
-        private const string FIELD_DISPLAY_NAME_KEY = "displayNameKey";
-        private const string FIELD_INVENTORY_REF = "inventoryReference";
-        private const string FIELD_SHOW_SORT_BUTTON = "showSortButton";
+        // 反射字段名
+        private const string FIELD_STORE_ALL_BUTTON = "storeAllButton"; // 全部存储按钮字段
+        private const string FIELD_ON_START_LOOT = "OnStartLoot"; // 开始 loot 事件字段
+        private const string FIELD_OTHER_INTERACTABLES = "otherInterablesInGroup"; // 其他可交互对象字段
+        private const string FIELD_MARKER_VISIBLE = "interactMarkerVisible"; // 交互标记可见性字段
+        private const string FIELD_DISPLAY_NAME_KEY = "displayNameKey"; // 显示名称键字段
+        private const string FIELD_INVENTORY_REF = "inventoryReference"; // 库存引用字段
+        private const string FIELD_SHOW_SORT_BUTTON = "showSortButton"; // 显示排序按钮字段
 
-        // State
-        private static InventoryData? _snapshot;
-        private static Inventory? _runtimeInventory;
-        private static InteractableLootbox? _lootbox;
-        private static string? _filePath;
-        private static DateTime _lastSaveTime = DateTime.MinValue;
-        private static bool _isDataReady = false; // Safety flag to prevent overwriting save with partial data
+        // 状态变量
+        private static InventoryData? _snapshot; // 库存快照
+        private static Inventory? _runtimeInventory; // 运行时库存
+        private static InteractableLootbox? _lootbox; //  lootbox 交互对象
+        private static string? _filePath; // 保存文件路径
+        private static DateTime _lastSaveTime = DateTime.MinValue; // 上次保存时间
+        private static bool _isDataReady = false; // 安全标志，防止用不完整数据覆盖保存
 
-        // Reflection Cache
-        private static FieldInfo? _storeAllButtonField;
-        private static FieldInfo? _otherInterablesInGroupField;
-        private static FieldInfo? _interactMarkerVisibleField;
-        private static FieldInfo? _displayNameKeyField;
-        private static FieldInfo? _inventoryReferenceField;
-        private static FieldInfo? _showSortButtonField;
-        private static FieldInfo? _onStartLootField;
+        // 反射缓存
+        private static FieldInfo? _storeAllButtonField; // 全部存储按钮字段缓存
+        private static FieldInfo? _otherInterablesInGroupField; // 其他可交互对象字段缓存
+        private static FieldInfo? _interactMarkerVisibleField; // 交互标记可见性字段缓存
+        private static FieldInfo? _displayNameKeyField; // 显示名称键字段缓存
+        private static FieldInfo? _inventoryReferenceField; // 库存引用字段缓存
+        private static FieldInfo? _showSortButtonField; // 显示排序按钮字段缓存
+        private static FieldInfo? _onStartLootField; // 开始 loot 事件字段缓存
 
+        /// <summary>
+        /// 注册事件监听
+        /// </summary>
         public static void RegisterEvents()
         {
             InteractableLootbox.OnStartLoot += OnStartLoot;
             InteractableLootbox.OnStopLoot += OnStopLoot;
         }
 
+        /// <summary>
+        /// 取消注册事件监听
+        /// </summary>
         public static void UnregisterEvents()
         {
             InteractableLootbox.OnStartLoot -= OnStartLoot;
             InteractableLootbox.OnStopLoot -= OnStopLoot;
         }
 
+        /// <summary>
+        /// 初始化仓库管理器
+        /// </summary>
         public static void Initialize()
         {
             if (!string.IsNullOrWhiteSpace(_filePath)) return;
@@ -77,17 +89,21 @@ namespace IndependentStash
                 
                 EnsureFileCached(_filePath);
                 
-                // Backup existing save on startup before we touch it
+                // 在启动时备份现有保存，然后再处理
                 CreateBackup(_filePath, "SessionStart");
                 
                 Load();
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] Initialize failed: {ex}");
+                Debug.LogError($"[IndependentStash] 初始化失败: {ex}");
             }
         }
 
+        /// <summary>
+        /// 确保文件已缓存
+        /// </summary>
+        /// <param name="path">文件路径</param>
         private static void EnsureFileCached(string path)
         {
             try
@@ -102,8 +118,8 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[IndependentStash] EnsureFileCached warning: {ex.Message}");
-                // Try to recover
+                Debug.LogWarning($"[IndependentStash] EnsureFileCached 警告: {ex.Message}");
+                // 尝试恢复
                 try
                 {
                     ES3.Save("Created", true, path);
@@ -114,6 +130,9 @@ namespace IndependentStash
             }
         }
 
+        /// <summary>
+        /// 保存仓库数据
+        /// </summary>
         public static void Save()
         {
             try
@@ -121,15 +140,15 @@ namespace IndependentStash
                 if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
                 if (string.IsNullOrWhiteSpace(_filePath)) return;
 
-                // SAFETY CHECK: If data wasn't loaded correctly, DO NOT SAVE.
-                // This prevents overwriting a good save with a partial/corrupted state.
+                // 安全检查：如果数据加载不正确，请勿保存
+                // 这可以防止用不完整/损坏的状态覆盖良好的保存
                 if (!_isDataReady)
                 {
-                    Debug.LogWarning("[IndependentStash] Save skipped: Data is not ready or failed to load previously.");
+                    Debug.LogWarning("[IndependentStash] 保存跳过: 数据未准备好或之前加载失败");
                     return;
                 }
 
-                // Debounce save (1 second)
+                // 防抖保存（1秒）
                 if ((DateTime.UtcNow - _lastSaveTime) < TimeSpan.FromSeconds(1)) return;
                 _lastSaveTime = DateTime.UtcNow;
 
@@ -154,23 +173,26 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] Save failed: {ex}");
+                Debug.LogError($"[IndependentStash] 保存失败: {ex}");
             }
         }
 
+        /// <summary>
+        /// 加载仓库数据
+        /// </summary>
         public static void Load()
         {
             if (string.IsNullOrWhiteSpace(_filePath)) Initialize();
             if (string.IsNullOrWhiteSpace(_filePath)) return;
             
-            _isDataReady = false; // Reset ready flag
+            _isDataReady = false; // 重置准备标志
 
             try
             {
                 var settings = new ES3Settings(_filePath) { location = ES3.Location.File };
                 if (!ES3.FileExists(_filePath, settings))
                 {
-                    // New file, so it's ready (empty)
+                    // 新文件，所以已准备好（空）
                     _isDataReady = true;
                     return;
                 }
@@ -181,26 +203,29 @@ namespace IndependentStash
                 }
                 else if (ES3.KeyExists(KEY_OLD_INVENTORY, _filePath, settings))
                 {
-                    // Migration
+                    // 迁移数据
                     _snapshot = ES3.Load<InventoryData>(KEY_OLD_INVENTORY, _filePath, settings);
                     ES3.Save(KEY_INVENTORY, _snapshot, _filePath, settings);
                     ES3.DeleteKey(KEY_OLD_INVENTORY, _filePath, settings);
-                    Debug.Log("[IndependentStash] Migrated inventory data to new key.");
+                    Debug.Log("[IndependentStash] 库存数据已迁移到新键");
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] Load failed: {ex}");
-                _isDataReady = false; // Mark as failed
+                Debug.LogError($"[IndependentStash] 加载失败: {ex}");
+                _isDataReady = false; // 标记为失败
             }
         }
 
+        /// <summary>
+        /// 将可交互对象附加到玩家存储
+        /// </summary>
         public static void AttachInteractableToPlayerStorage()
         {
             if (LevelManager.Instance == null || !LevelManager.Instance.IsBaseLevel) return;
             if (PlayerStorage.Instance == null) return;
 
-            // Check if object was destroyed
+            // 检查对象是否已被销毁
             if (_lootbox != null && _lootbox.gameObject == null)
             {
                 _lootbox = null;
@@ -213,17 +238,20 @@ namespace IndependentStash
             }
             else
             {
-                // Ensure it's still in the group
+                // 确保它仍然在组中
                 TryInjectIntoGroup(PlayerStorage.Instance.InteractableLootBox, _lootbox);
             }
 
-            // Ensure visible
+            // 确保可见
             if (_lootbox != null && _lootbox.gameObject != null)
             {
                 _lootbox.gameObject.SetActive(true);
             }
         }
 
+        /// <summary>
+        /// 尝试切换仓库显示
+        /// </summary>
         public static void TryToggleStash()
         {
             if (_lootbox == null || LootView.Instance == null) return;
@@ -239,12 +267,15 @@ namespace IndependentStash
             }
         }
 
-        #region Internal Logic
+        #region 内部逻辑
 
+        /// <summary>
+        /// 创建仓库对象
+        /// </summary>
         private static void CreateStashObject()
         {
-            // Create inactive to prevent Awake from running immediately
-            // This allows us to fix the null List<InteractableBase> issue before Awake triggers
+            // 创建时处于非活动状态，防止 Awake 立即运行
+            // 这允许我们在 Awake 触发前修复 null List<InteractableBase> 问题
             var go = new GameObject("PlayerStorage_Independent");
             go.SetActive(false); 
             
@@ -255,8 +286,8 @@ namespace IndependentStash
 
             _lootbox = go.AddComponent<InteractableLootbox>();
 
-            // FIX: Initialize the list via reflection before Awake runs
-            // InteractableBase.Awake iterates this list, and it's null when added via AddComponent
+            // 修复：在 Awake 运行前通过反射初始化列表
+            // InteractableBase.Awake 会遍历此列表，而通过 AddComponent 添加时它是 null
             try
             {
                 if (_otherInterablesInGroupField == null)
@@ -266,14 +297,14 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] Failed to fix otherInterablesInGroup: {ex}");
+                Debug.LogError($"[IndependentStash] 修复 otherInterablesInGroup 失败: {ex}");
             }
 
             SetDisplayName(_lootbox, "我的仓库");
             _lootbox.InteractName = "我的仓库";
             _lootbox.useDefaultInteractName = false;
             
-            // Disable Pick All (critical for independent stash)
+            // 禁用全部拾取（对独立仓库至关重要）
             _lootbox.showPickAllButton = false;
             
             _lootbox.needInspect = false;
@@ -281,22 +312,25 @@ namespace IndependentStash
             SetShowSortButton(_lootbox, true);
             _lootbox.MarkerActive = false;
             
-            // Create Inventory
+            // 创建库存
             if (_runtimeInventory == null)
             {
                 CreateInventory();
             }
             
-            // Tagging
+            // 标记
             _lootbox.gameObject.tag = PlayerStorage.Instance.gameObject.tag;
             
-            // Activate now that everything is set up
+            // 现在一切设置完毕，激活对象
             go.SetActive(true);
 
-            // Injection
+            // 注入到组中
             TryInjectIntoGroup(parentLootbox, _lootbox);
         }
 
+        /// <summary>
+        /// 创建库存
+        /// </summary>
         private static void CreateInventory()
         {
             var invGo = new GameObject("IndependentStashInventory");
@@ -314,11 +348,15 @@ namespace IndependentStash
             }
             else
             {
-                // No snapshot means fresh inventory, so data is ready
+                // 没有快照意味着新库存，所以数据已准备好
                 _isDataReady = true;
             }
         }
 
+        /// <summary>
+        /// 开始 loot 时的回调
+        /// </summary>
+        /// <param name="lootbox">被 loot 的 lootbox</param>
         private static void OnStartLoot(InteractableLootbox lootbox)
         {
             if (_lootbox != null && lootbox == _lootbox)
@@ -327,6 +365,10 @@ namespace IndependentStash
             }
         }
 
+        /// <summary>
+        /// 停止 loot 时的回调
+        /// </summary>
+        /// <param name="lootbox">被 loot 的 lootbox</param>
         private static void OnStopLoot(InteractableLootbox lootbox)
         {
             if (_lootbox != null && lootbox == _lootbox)
@@ -339,9 +381,12 @@ namespace IndependentStash
             }
         }
 
+        /// <summary>
+        /// 异步启用全部存储按钮
+        /// </summary>
         private static async UniTaskVoid EnableStoreAllButtonAsync()
         {
-            await UniTask.Yield(); // Wait for LootView to open/init
+            await UniTask.Yield(); // 等待 LootView 打开/初始化
 
             if (LootView.Instance == null) return;
 
@@ -349,11 +394,14 @@ namespace IndependentStash
             if (btn != null)
             {
                 btn.gameObject.SetActive(true);
-                btn.onClick.RemoveListener(OnMyStoreAll); // Prevent duplicates
+                btn.onClick.RemoveListener(OnMyStoreAll); // 防止重复
                 btn.onClick.AddListener(OnMyStoreAll);
             }
         }
 
+        /// <summary>
+        /// 全部存储按钮点击事件
+        /// </summary>
         private static void OnMyStoreAll()
         {
             if (LootView.Instance == null || _runtimeInventory == null) return;
@@ -373,7 +421,7 @@ namespace IndependentStash
                 Item itemAt = sourceInventory.GetItemAt(i);
                 if (itemAt != null)
                 {
-                    if (!_runtimeInventory.AddAndMerge(itemAt)) break; // Inventory full
+                    if (!_runtimeInventory.AddAndMerge(itemAt)) break; // 库存已满
 
                     if (!playedSound)
                     {
@@ -384,6 +432,9 @@ namespace IndependentStash
             }
         }
 
+        /// <summary>
+        /// 内部打开仓库
+        /// </summary>
         private static void OpenStashInternal()
         {
             if (_lootbox == null) return;
@@ -406,13 +457,18 @@ namespace IndependentStash
                         }
                         catch (Exception ex)
                         {
-                            Debug.LogError($"[IndependentStash] Error invoking OnStartLoot: {ex}");
+                            Debug.LogError($"[IndependentStash] 调用 OnStartLoot 错误: {ex}");
                         }
                     }
                 }
             }
         }
 
+        /// <summary>
+        /// 创建备份
+        /// </summary>
+        /// <param name="path">文件路径</param>
+        /// <param name="suffix">备份后缀</param>
         private static void CreateBackup(string path, string suffix)
         {
             if (!ES3.FileExists(path)) return;
@@ -425,14 +481,18 @@ namespace IndependentStash
                     ES3.DeleteFile(backupPath);
                 }
                 ES3.CopyFile(path, backupPath);
-                Debug.Log($"[IndependentStash] Created backup save file: {suffix}");
+                Debug.Log($"[IndependentStash] 创建备份保存文件: {suffix}");
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[IndependentStash] Failed to create backup ({suffix}): {ex.Message}");
+                Debug.LogWarning($"[IndependentStash] 创建备份失败 ({suffix}): {ex.Message}");
             }
         }
 
+        /// <summary>
+        /// 创建空快照
+        /// </summary>
+        /// <returns>空的库存数据</returns>
         private static InventoryData CreateEmptySnapshot()
         {
             var temp = new GameObject("IndependentStashTempInv");
@@ -443,33 +503,38 @@ namespace IndependentStash
             return data;
         }
 
+        /// <summary>
+        /// 异步加载库存数据
+        /// </summary>
+        /// <param name="snapshot">库存快照</param>
+        /// <param name="inventory">目标库存</param>
         private static async UniTaskVoid LoadInventoryDataAsync(InventoryData snapshot, Inventory inventory)
         {
             if (snapshot == null || inventory == null) return;
 
-            // Mark data as NOT ready while loading
+            // 加载时标记数据为未准备好
             _isDataReady = false;
 
             try
             {
                 await UniTask.Yield(PlayerLoopTiming.Update);
                 
-                // CRITICAL: We wrap the load in a try-catch to detect partial failures.
-                // If this fails, we assume the data is corrupted/incomplete and block saving.
+                // 关键：我们将加载包装在 try-catch 中以检测部分失败
+                // 如果失败，我们假设数据已损坏/不完整，并阻止保存
                 await InventoryData.LoadIntoInventory(snapshot, inventory);
                 
-                // If we get here, load was successful
+                // 如果我们到达这里，加载成功
                 _isDataReady = true;
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] LoadInventoryDataAsync CRITICAL FAILURE: {ex}");
-                Debug.LogError("[IndependentStash] Saving is now DISABLED to prevent data loss. Please check your mods.");
+                Debug.LogError($"[IndependentStash] LoadInventoryDataAsync 严重失败: {ex}");
+                Debug.LogError("[IndependentStash] 保存现已禁用，以防止数据丢失。请检查您的模组。");
                 
-                // We deliberately leave _isDataReady = false here.
+                // 我们故意在这里留下 _isDataReady = false
                 
-                // Recovery logic: Try to load what we can, or initialize empty if totally broken
-                // But we still don't allow saving over the old file.
+                // 恢复逻辑：尝试加载我们能加载的内容，或者如果完全损坏则初始化空库存
+                // 但我们仍然不允许覆盖旧文件
                 bool hasExistingItems = false;
                 try
                 {
@@ -480,7 +545,7 @@ namespace IndependentStash
 
                 if (!hasExistingItems)
                 {
-                    Debug.LogWarning("[IndependentStash] Initializing empty inventory due to load failure (ReadOnly Mode)");
+                    Debug.LogWarning("[IndependentStash] 由于加载失败，初始化空库存（只读模式）");
                     try
                     {
                         var emptySnapshot = CreateEmptySnapshot();
@@ -491,6 +556,10 @@ namespace IndependentStash
             }
         }
 
+        /// <summary>
+        /// 确保库存有过滤提供器
+        /// </summary>
+        /// <param name="target">目标库存</param>
         private static void EnsureFilterProvider(Inventory target)
         {
             if (target == null) return;
@@ -506,27 +575,32 @@ namespace IndependentStash
                 return;
             }
 
-            // Fallback default filters
-            // Note: We don't have access to the original icons here, so the filter buttons will be icon-less but functional.
+            // 后备默认过滤器
+            // 注意：我们这里无法访问原始图标，所以过滤按钮将没有图标但可以正常工作
             var tags = GameplayDataSettings.Tags;
             mine.entries = new InventoryFilterProvider.FilterEntry[]
             {
-                new() { name = "ItemFilter_All", requireTags = Array.Empty<Tag>() },
-                new() { name = "ItemFilter_Weapon", requireTags = new[] { tags.Gun } },
-                new() { name = "ItemFilter_Bullet", requireTags = new[] { tags.Bullet } },
-                new() { name = "ItemFilter_Equipment", requireTags = new[] { tags.Armor, tags.Helmat, tags.Backpack } },
-                new() { name = "ItemFilter_Accessory", requireTags = new[] { TagUtilities.TagFromString("Attachment") ?? tags.Special } },
-                new() { name = "ItemFilter_Totem", requireTags = new[] { TagUtilities.TagFromString("Totem") ?? tags.Special } },
-                new() { name = "ItemFilter_Medic", requireTags = new[] { TagUtilities.TagFromString("Medicine") ?? tags.Special } },
-                new() { name = "ItemFilter_Food", requireTags = new[] { TagUtilities.TagFromString("Food") ?? tags.Bait } },
-                new() { name = "ItemFilter_Other", requireTags = new[] { tags.Special } }
+                new() { name = "ItemFilter_All", requireTags = Array.Empty<Tag>() }, // 全部
+                new() { name = "ItemFilter_Weapon", requireTags = new[] { tags.Gun } }, // 武器
+                new() { name = "ItemFilter_Bullet", requireTags = new[] { tags.Bullet } }, // 子弹
+                new() { name = "ItemFilter_Equipment", requireTags = new[] { tags.Armor, tags.Helmat, tags.Backpack } }, // 装备
+                new() { name = "ItemFilter_Accessory", requireTags = new[] { TagUtilities.TagFromString("Attachment") ?? tags.Special } }, // 配件
+                new() { name = "ItemFilter_Totem", requireTags = new[] { TagUtilities.TagFromString("Totem") ?? tags.Special } }, // 图腾
+                new() { name = "ItemFilter_Medic", requireTags = new[] { TagUtilities.TagFromString("Medicine") ?? tags.Special } }, // 医疗
+                new() { name = "ItemFilter_Food", requireTags = new[] { TagUtilities.TagFromString("Food") ?? tags.Bait } }, // 食物
+                new() { name = "ItemFilter_Other", requireTags = new[] { tags.Special } } // 其他
             };
         }
 
         #endregion
 
-        #region Reflection Helpers
+        #region 反射辅助方法
 
+        /// <summary>
+        /// 获取全部存储按钮
+        /// </summary>
+        /// <param name="view">LootView 实例</param>
+        /// <returns>全部存储按钮</returns>
         private static Button? GetStoreAllButton(LootView view)
         {
             if (_storeAllButtonField == null)
@@ -534,6 +608,11 @@ namespace IndependentStash
             return _storeAllButtonField?.GetValue(view) as Button;
         }
 
+        /// <summary>
+        /// 尝试将可交互对象注入到组中
+        /// </summary>
+        /// <param name="master">主可交互对象</param>
+        /// <param name="other">其他可交互对象</param>
         private static void TryInjectIntoGroup(InteractableBase master, InteractableBase other)
         {
             if (master == null || other == null) return;
@@ -555,10 +634,15 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] TryInjectIntoGroup failed: {ex}");
+                Debug.LogError($"[IndependentStash] TryInjectIntoGroup 失败: {ex}");
             }
         }
 
+        /// <summary>
+        /// 设置显示名称
+        /// </summary>
+        /// <param name="lootbox">Lootbox 对象</param>
+        /// <param name="text">显示文本</param>
         private static void SetDisplayName(InteractableLootbox lootbox, string text)
         {
             try
@@ -569,10 +653,15 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] SetDisplayName failed: {ex}");
+                Debug.LogError($"[IndependentStash] SetDisplayName 失败: {ex}");
             }
         }
 
+        /// <summary>
+        /// 设置库存引用
+        /// </summary>
+        /// <param name="lootbox">Lootbox 对象</param>
+        /// <param name="inventory">库存对象</param>
         private static void SetInventoryReference(InteractableLootbox lootbox, Inventory inventory)
         {
             try
@@ -583,10 +672,15 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] SetInventoryReference failed: {ex}");
+                Debug.LogError($"[IndependentStash] SetInventoryReference 失败: {ex}");
             }
         }
 
+        /// <summary>
+        /// 获取库存引用
+        /// </summary>
+        /// <param name="lootbox">Lootbox 对象</param>
+        /// <returns>库存对象</returns>
         private static Inventory? GetInventoryReference(InteractableLootbox lootbox)
         {
             try
@@ -597,11 +691,16 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] GetInventoryReference failed: {ex}");
+                Debug.LogError($"[IndependentStash] GetInventoryReference 失败: {ex}");
                 return null;
             }
         }
 
+        /// <summary>
+        /// 设置是否显示排序按钮
+        /// </summary>
+        /// <param name="lootbox">Lootbox 对象</param>
+        /// <param name="value">是否显示</param>
         private static void SetShowSortButton(InteractableLootbox lootbox, bool value)
         {
             try
@@ -612,7 +711,7 @@ namespace IndependentStash
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] SetShowSortButton failed: {ex}");
+                Debug.LogError($"[IndependentStash] SetShowSortButton 失败: {ex}");
             }
         }
 

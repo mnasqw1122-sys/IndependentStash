@@ -4,17 +4,27 @@ using UnityEngine;
 
 namespace IndependentStash
 {
+    /// <summary>
+    /// 模组配置类 - 管理模组的配置设置
+    /// </summary>
     public static class ModConfig
     {
+        /// <summary>
+        /// 打开/关闭仓库的按键
+        /// </summary>
         public static KeyCode OpenStashKey { get; private set; } = KeyCode.BackQuote;
 
+        /// <summary>
+        /// 加载配置文件
+        /// </summary>
+        /// <param name="configPath">配置文件路径</param>
         public static void Load(string configPath)
         {
             try
             {
                 if (!File.Exists(configPath))
                 {
-                    // Create default config if it doesn't exist
+                    // 如果配置文件不存在，创建默认配置
                     CreateDefault(configPath);
                     return;
                 }
@@ -36,21 +46,25 @@ namespace IndependentStash
                         if (Enum.TryParse(value, true, out KeyCode parsedKey))
                         {
                             OpenStashKey = parsedKey;
-                            Debug.Log($"[IndependentStash] Config loaded: OpenStashKey = {OpenStashKey}");
+                            Debug.Log($"[IndependentStash] 配置已加载: OpenStashKey = {OpenStashKey}");
                         }
                         else
                         {
-                            Debug.LogWarning($"[IndependentStash] Invalid key in config: {value}. Using default {OpenStashKey}");
+                            Debug.LogWarning($"[IndependentStash] 配置中的按键无效: {value}。使用默认值 {OpenStashKey}");
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] Failed to load config: {ex}");
+                Debug.LogError($"[IndependentStash] 加载配置失败: {ex}");
             }
         }
 
+        /// <summary>
+        /// 创建默认配置文件
+        /// </summary>
+        /// <param name="configPath">配置文件路径</param>
         private static void CreateDefault(string configPath)
         {
             try
@@ -65,11 +79,11 @@ namespace IndependentStash
                     writer.WriteLine("# 常见按键 / Common keys: BackQuote (`), Tab, I, O, P, F1, F2...");
                     writer.WriteLine($"OpenStashKey = {OpenStashKey}");
                 }
-                Debug.Log($"[IndependentStash] Created default config at {configPath}");
+                Debug.Log($"[IndependentStash] 在 {configPath} 创建了默认配置");
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] Failed to create default config: {ex}");
+                Debug.LogError($"[IndependentStash] 创建默认配置失败: {ex}");
             }
         }
     }
