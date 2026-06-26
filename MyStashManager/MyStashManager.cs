@@ -225,7 +225,7 @@ namespace IndependentStash
             if (LevelManager.Instance == null || !LevelManager.Instance.IsBaseLevel) return;
             if (PlayerStorage.Instance == null) return;
 
-            // 检查对象是否已被销毁
+            // 检查 lootbox 对象是否已被销毁
             if (_lootbox != null && _lootbox.gameObject == null)
             {
                 _lootbox = null;
@@ -238,6 +238,26 @@ namespace IndependentStash
             }
             else
             {
+                // 检查 _runtimeInventory 是否仍然有效（防止场景切换等导致引用失效）
+                // 如果引用失效，inventoryReference 会变成 null，导致 InteractableLootbox.Inventory
+                // 回退到 GetOrCreateInventory(this)，由于位置键冲突可能返回错误的库存
+                if (_runtimeInventory == null || _runtimeInventory.gameObject == null)
+                {
+                    Debug.LogWarning("[IndependentStash] _runtimeInventory 已失效，正在重新创建...");
+                    _runtimeInventory = null;
+                    CreateInventory();
+                }
+                else
+                {
+                    // 确保 inventoryReference 仍然指向 _runtimeInventory
+                    // 防止任何外部代码清除了引用
+                    var currentRef = GetInventoryReference(_lootbox);
+                    if (currentRef != _runtimeInventory)
+                    {
+                        SetInventoryReference(_lootbox, _runtimeInventory);
+                    }
+                }
+
                 // 确保它仍然在组中
                 TryInjectIntoGroup(PlayerStorage.Instance.InteractableLootBox, _lootbox);
             }
@@ -280,9 +300,15 @@ namespace IndependentStash
             go.SetActive(false); 
             
             var parentLootbox = PlayerStorage.Instance.InteractableLootBox;
-            
+
             go.transform.SetParent(parentLootbox.transform.parent, false);
-            go.transform.SetPositionAndRotation(parentLootbox.transform.position, parentLootbox.transform.rotation);
+
+            // 关键修复：偏移位置以避免与父级 lootbox 的位置键冲突
+            // InteractableLootbox.GetKey() 使用 transform.position * 10f 作为字典键
+            // 如果两个 lootbox 在同一位置，GetOrCreateInventory 会返回错误的缓存库存
+            // 偏移 0.5 单位（*10 = 5）确保键完全不同，且不影响交互组（组基于 otherInterablesInGroup 列表）
+            var stashPos = parentLootbox.transform.position + new Vector3(0f, -0.5f, 0f);
+            go.transform.SetPositionAndRotation(stashPos, parentLootbox.transform.rotation);
 
             _lootbox = go.AddComponent<InteractableLootbox>();
 
@@ -515,14 +541,19 @@ namespace IndependentStash
             // 加载时标记数据为未准备好
             _isDataReady = false;
 
+            // 关键修复：设置 Loading = true 防止整理(Sort)等操作在加载期间执行
+            // InventoryDisplay.OnSortButtonClicked 会检查 !Target.Loading
+            // 如果不设置 Loading，用户可能在加载期间点击整理，导致物品状态不一致
+            inventory.Loading = true;
+
             try
             {
                 await UniTask.Yield(PlayerLoopTiming.Update);
-                
+
                 // 关键：我们将加载包装在 try-catch 中以检测部分失败
                 // 如果失败，我们假设数据已损坏/不完整，并阻止保存
                 await InventoryData.LoadIntoInventory(snapshot, inventory);
-                
+
                 // 如果我们到达这里，加载成功
                 _isDataReady = true;
             }
@@ -530,9 +561,9 @@ namespace IndependentStash
             {
                 Debug.LogError($"[IndependentStash] LoadInventoryDataAsync 严重失败: {ex}");
                 Debug.LogError("[IndependentStash] 保存现已禁用，以防止数据丢失。请检查您的模组。");
-                
+
                 // 我们故意在这里留下 _isDataReady = false
-                
+
                 // 恢复逻辑：尝试加载我们能加载的内容，或者如果完全损坏则初始化空库存
                 // 但我们仍然不允许覆盖旧文件
                 bool hasExistingItems = false;
@@ -552,6 +583,14 @@ namespace IndependentStash
                         await InventoryData.LoadIntoInventory(emptySnapshot, inventory);
                     }
                     catch {}
+                }
+            }
+            finally
+            {
+                // 确保无论成功还是失败，Loading 标志都被重置
+                if (inventory != null && inventory.gameObject != null)
+                {
+                    inventory.Loading = false;
                 }
             }
         }
