@@ -23,6 +23,14 @@ namespace IndependentStash
         private const int CAPACITY = 5000; // 仓库容量
         private const string SAVE_ROOT_DIR = "Mod_IndependentStash"; // 保存根目录
         private const string SAVE_FILE_NAME = "MyStash.sav"; // 保存文件名
+
+        /// <summary>
+        /// 仓库显示名称。
+        /// 注意：这不是本地化键，需配合 ModBehaviour 中注册的
+        /// LocalizationManager.SetOverrideText 覆盖文本使用，
+        /// 否则未命中的键会被游戏显示为 "*我的仓库*"。
+        /// </summary>
+        public const string StashDisplayName = "我的仓库";
         
         // ES3 键名
         private const string KEY_INVENTORY = "IndependentStash/Inventory/MyStash"; // 库存数据键
@@ -44,7 +52,9 @@ namespace IndependentStash
         private static InteractableLootbox? _lootbox; //  lootbox 交互对象
         private static string? _filePath; // 保存文件路径
         private static DateTime _lastSaveTime = DateTime.MinValue; // 上次保存时间
+        private static DateTime _lastBackupTime = DateTime.MinValue; // 上次备份时间
         private static bool _isDataReady = false; // 安全标志，防止用不完整数据覆盖保存
+        private const int BACKUP_INTERVAL_SECONDS = 300; // 备份间隔（5分钟），防止高频保存导致频繁磁盘IO
 
         // 反射缓存
         private static FieldInfo? _storeAllButtonField; // 全部存储按钮字段缓存
@@ -152,7 +162,14 @@ namespace IndependentStash
                 if ((DateTime.UtcNow - _lastSaveTime) < TimeSpan.FromSeconds(1)) return;
                 _lastSaveTime = DateTime.UtcNow;
 
-                CreateBackup(_filePath, "LastGood");
+                // 备份防抖：只在间隔超过 BACKUP_INTERVAL_SECONDS 时创建备份
+                // 游戏会高频触发 OnCollectSaveData（伴随 ItemShortcut Saving），
+                // 每次都创建备份会造成不必要的磁盘IO（虽然文件会被覆盖）
+                if ((DateTime.UtcNow - _lastBackupTime) >= TimeSpan.FromSeconds(BACKUP_INTERVAL_SECONDS))
+                {
+                    CreateBackup(_filePath, "LastGood");
+                    _lastBackupTime = DateTime.UtcNow;
+                }
 
                 if (_runtimeInventory != null)
                 {
@@ -326,13 +343,14 @@ namespace IndependentStash
                 Debug.LogError($"[IndependentStash] 修复 otherInterablesInGroup 失败: {ex}");
             }
 
-            SetDisplayName(_lootbox, "我的仓库");
-            _lootbox.InteractName = "我的仓库";
+            SetDisplayName(_lootbox, StashDisplayName);
+            _lootbox.InteractName = StashDisplayName;
             _lootbox.useDefaultInteractName = false;
-            
-            // 禁用全部拾取（对独立仓库至关重要）
-            _lootbox.showPickAllButton = false;
-            
+
+            // 不需要设置 showPickAllButton：游戏 LootView.RefreshPickAllButton
+            // 实际无条件隐藏"全部拾取"按钮（已通过 IL 验证），该字段不生效，
+            // 此处不再设置，避免误导后续维护者。
+
             _lootbox.needInspect = false;
             _lootbox.hideIfEmpty = null;
             SetShowSortButton(_lootbox, true);

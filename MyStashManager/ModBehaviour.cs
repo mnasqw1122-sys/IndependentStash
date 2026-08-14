@@ -6,6 +6,7 @@ using UnityEngine;
 using Saves;
 using UnityEngine.SceneManagement;
 using Cysharp.Threading.Tasks;
+using SodaCraft.Localizations;
 
 namespace IndependentStash
 {
@@ -17,10 +18,19 @@ namespace IndependentStash
         /// <summary>
         /// 设置完成后调用
         /// </summary>
+        /// <remarks>
+        /// 注意：OnEnable 会在 Setup()（即本方法）之前被 Unity 调用，
+        /// 此时 info 尚未赋值，因此需要 info.path 的配置加载和仓库管理器
+        /// 初始化都必须放在这里，而不能放在 OnEnable 中。
+        /// </remarks>
         protected override void OnAfterSetup()
         {
             base.OnAfterSetup();
             ModConfig.Load(Path.Combine(info.path, "config.ini"));
+            MyStashManager.Initialize();
+
+            // 注册仓库名称的覆盖文本，防止未命中的本地化键被显示为 "*我的仓库*"
+            LocalizationManager.SetOverrideText(MyStashManager.StashDisplayName, MyStashManager.StashDisplayName);
         }
 
         /// <summary>
@@ -32,8 +42,9 @@ namespace IndependentStash
             SavesSystem.OnCollectSaveData += OnCollectSaveData;
             SceneManager.sceneLoaded += OnSceneLoaded;
             SceneManager.sceneUnloaded += OnSceneUnloaded;
-            
-            MyStashManager.Initialize();
+
+            // 只注册事件；初始化在 OnAfterSetup 中执行（需要 info.path），
+            // 若初始化前就有保存事件触发，MyStashManager.Save 内部会自我初始化
             MyStashManager.RegisterEvents();
         }
 
