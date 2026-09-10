@@ -15,6 +15,8 @@ namespace IndependentStash
     /// </summary>
     public class ModBehaviour : Duckov.Modding.ModBehaviour
     {
+        private const string LOG_TAG = "[IndependentStash]";
+
         /// <summary>
         /// 设置完成后调用
         /// </summary>
@@ -26,11 +28,31 @@ namespace IndependentStash
         protected override void OnAfterSetup()
         {
             base.OnAfterSetup();
+            ModConfig.SetModDirectory(info.path);
             ModConfig.Load(Path.Combine(info.path, "config.ini"));
             MyStashManager.Initialize();
 
             // 注册仓库名称的覆盖文本，防止未命中的本地化键被显示为 "*我的仓库*"
             LocalizationManager.SetOverrideText(MyStashManager.StashDisplayName, MyStashManager.StashDisplayName);
+
+            Debug.Log($"{LOG_TAG} 初始化完成: 按键={ModConfig.OpenStashKey}, 容量={ModConfig.Capacity}, " +
+                      $"备份份数={ModConfig.BackupCount}, 注入交互组={ModConfig.InjectToInteractGroup}");
+        }
+
+        /// <summary>
+        /// 停用前调用（游戏 DeactivateMod 会先触发这里，再销毁 GameObject）。
+        /// </summary>
+        protected override void OnBeforeDeactivate()
+        {
+            base.OnBeforeDeactivate();
+            try
+            {
+                MyStashManager.Save(force: true);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"{LOG_TAG} 停用前保存错误: {ex}");
+            }
         }
 
         /// <summary>
@@ -57,8 +79,8 @@ namespace IndependentStash
             SavesSystem.OnCollectSaveData -= OnCollectSaveData;
             SceneManager.sceneLoaded -= OnSceneLoaded;
             SceneManager.sceneUnloaded -= OnSceneUnloaded;
-            
-            MyStashManager.Save();
+
+            MyStashManager.Save(force: true);
             MyStashManager.UnregisterEvents();
         }
 
@@ -78,13 +100,10 @@ namespace IndependentStash
         /// <param name="mode">加载模式</param>
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
-            Debug.Log($"[IndependentStash] 场景加载: {scene.name}");
-            
-            // 检查是否为基地关卡
-            if (IsBaseLevel(scene.name))
-            {
-                DelayedAttachAsync().Forget();
-            }
+            // 作为 OnAfterLevelInitialized 之外的兜底路径；
+            // 是否基地由 LevelManager/LevelConfig 权威判定，不再按场景名猜测
+            // （突袭图 Level_SnowMilitaryBase 等也含 "Base"）
+            DelayedAttachAsync().Forget();
         }
 
         /// <summary>
@@ -93,26 +112,29 @@ namespace IndependentStash
         /// <param name="scene">卸载的场景</param>
         private void OnSceneUnloaded(Scene scene)
         {
-            Debug.Log($"[IndependentStash] 场景卸载: {scene.name}");
-            
-            if (IsBaseLevel(scene.name))
+            // 仅在基地关卡卸载时保存（离开基地前把仓库数据落盘）
+            if (MyStashManager.IsBaseLevel())
             {
-                MyStashManager.Save();
+                MyStashManager.Save(force: true);
             }
         }
 
         /// <summary>
         /// 收集保存数据时调用
         /// </summary>
+        /// <remarks>
+        /// 这里必须强制保存（跳过防抖）：游戏紧接着会调用 <c>SavesSystem.SaveFile()</c> 落盘，
+        /// 若本次因防抖被跳过，就会出现"游戏存档已写入、仓库数据没写"的不一致窗口。
+        /// </remarks>
         private void OnCollectSaveData()
         {
             try
             {
-                MyStashManager.Save();
+                MyStashManager.Save(force: true);
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] 保存钩子错误: {ex}");
+                Debug.LogError($"{LOG_TAG} 保存钩子错误: {ex}");
             }
         }
 
@@ -121,13 +143,13 @@ namespace IndependentStash
         /// </summary>
         private void OnApplicationQuit()
         {
-            try 
-            { 
-                MyStashManager.Save(); 
-            } 
+            try
+            {
+                MyStashManager.Save(force: true);
+            }
             catch (Exception ex)
             {
-                Debug.LogError($"[IndependentStash] 退出保存错误: {ex}");
+                Debug.LogError($"{LOG_TAG} 退出保存错误: {ex}");
             }
         }
 
@@ -150,22 +172,10 @@ namespace IndependentStash
             // 等待0.1秒实时时间以确保初始化完成
             await UniTask.Delay(TimeSpan.FromSeconds(0.1f), ignoreTimeScale: true);
 
-            if (LevelManager.Instance != null && LevelManager.Instance.IsBaseLevel)
+            if (MyStashManager.IsBaseLevel())
             {
                 MyStashManager.AttachInteractableToPlayerStorage();
             }
-        }
-
-        /// <summary>
-        /// 检查是否为基地关卡
-        /// </summary>
-        /// <param name="sceneName">场景名称</param>
-        /// <returns>是否为基地关卡</returns>
-        private bool IsBaseLevel(string sceneName)
-        {
-            if (string.IsNullOrEmpty(sceneName)) return false;
-            return sceneName.IndexOf("Base", StringComparison.OrdinalIgnoreCase) >= 0 
-                || sceneName.Contains("基地");
         }
     }
 }

@@ -6,7 +6,17 @@
     <DuckovPath>D:\xiazai\jli\Escape from Duckov</DuckovPath>
     <SubPath>\Duckov_Data\Managed\</SubPath>
     <LangVersion>latest</LangVersion>
+    <!-- 发布版本号（与 info.ini 的 version 保持一致） -->
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <Product>独立仓库 (Independent Stash)</Product>
+    <AssemblyTitle>IndependentStash</AssemblyTitle>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- 分析/测试产物不参与模组编译 -->
+    <Compile Remove="_analysis\**\*.cs" />
+  </ItemGroup>
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(DuckovPath)$(SubPath)Assembly-CSharp.dll</HintPath>
